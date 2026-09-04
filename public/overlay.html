@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Cam Overlay</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="overlay">
+
+<script src="app.js"></script>
+<script src="sync.js"></script>
+<script>
+let lastLayoutKey = null;
+let tileRefs = {}; // player.id -> DOM refs
+
+function buildGrid(state){
+  const rows = rowsFor(state.players.length);
+  let idx = 0;
+  const canvas = document.createElement('div');
+  canvas.className = 'canvas16x9';
+  tileRefs = {};
+
+  rows.forEach(rowCount=>{
+    const row = document.createElement('div');
+    row.className = 'cam-row';
+    for(let i=0;i<rowCount;i++){
+      const p = state.players[idx];
+      if(!p){ idx++; continue; }
+
+      const tile = document.createElement('div');
+      tile.className = 'cam-tile';
+
+      const camWindow = document.createElement('div');
+      camWindow.className = 'cam-window';
+
+      const hearts = document.createElement('div');
+      hearts.className = 'hearts';
+
+      const nameBar = document.createElement('div');
+      nameBar.className = 'name-bar';
+      nameBar.innerHTML = `<span class="chip">AM ZUG</span><span class="name"></span>`;
+
+      tile.appendChild(camWindow);
+      tile.appendChild(hearts);
+      tile.appendChild(nameBar);
+      row.appendChild(tile);
+
+      tileRefs[p.id] = {
+        tile, camWindow, hearts,
+        nameEl: nameBar.querySelector('.name'),
+        currentVdo: undefined // erzwingt beim ersten updateTile ein iframe-Setup
+      };
+      idx++;
+    }
+    canvas.appendChild(row);
+  });
+
+  document.body.innerHTML = '';
+  document.body.appendChild(canvas);
+}
+
+function updateTile(p, idx){
+  const ref = tileRefs[p.id];
+  if(!ref) return;
+
+  ref.tile.className = 'cam-tile'
+    + (p.active ? ' active' : '')
+    + (isEliminated(p) ? ' eliminated' : '');
+
+  // Cam-Fenster nur anfassen, wenn sich der Stream tatsächlich geändert hat -> kein Reload/Flackern
+  if(ref.currentVdo !== p.vdo){
+    ref.currentVdo = p.vdo;
+    const vdoSrc = buildVdoViewSrc(p.vdo);
+    ref.camWindow.innerHTML = vdoSrc
+      ? `<iframe src="${vdoSrc}" allow="camera; microphone; autoplay; fullscreen" loading="eager"></iframe>`
+      : `<div class="cam-empty">wartet auf Stream …</div>`;
+  }
+
+  let heartsHtml = '';
+  for(let h=0; h<HEARTS_PER_PLAYER; h++){
+    heartsHtml += `<span class="heart${h>=p.hearts?' empty':''}">${HEART_SVG}</span>`;
+  }
+  if(ref.hearts.innerHTML !== heartsHtml) ref.hearts.innerHTML = heartsHtml;
+
+  const displayName = p.name || 'Spieler ' + (idx+1);
+  if(ref.nameEl.textContent !== displayName) ref.nameEl.textContent = displayName;
+}
+
+function render(){
+  const state = loadState();
+  const layoutKey = state.players.map(p=>p.id).join(',');
+
+  if(layoutKey !== lastLayoutKey){
+    buildGrid(state);
+    lastLayoutKey = layoutKey;
+  }
+
+  state.players.forEach((p, idx)=> updateTile(p, idx));
+}
+
+window.onSyncStateUpdate = render;
+render();
+window.addEventListener('storage', (e)=>{ if(e.key===STORAGE_KEY) render(); });
+/* Sicherheitsnetz, falls weder storage-Event noch Sync-Server-Nachricht ankommt.
+   Da nur noch gezielt aktualisiert wird (kein DOM-Neuaufbau), verursacht das kein Flackern mehr. */
+setInterval(render, 2000);
+</script>
+</body>
+</html>
