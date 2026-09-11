@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Cam Overlay</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="overlay">
+<div id="syncBadge" class="sync-badge-overlay offline">verbinde …</div>
+
+<script src="app.js"></script>
+<script src="sync.js"></script>
+<script>
+window.onSyncStatusChange = (connected)=>{
+  const badge = document.getElementById('syncBadge');
+  if(!badge) return;
+  badge.textContent = connected ? '● live' : '● getrennt';
+  badge.className = 'sync-badge-overlay ' + (connected ? 'online' : 'offline');
+};
+
+let lastLayoutKey = null;
+let tileRefs = {}; // player.id -> DOM refs
+let canvasEl = null;
+let rowsCache = [];
+
+const TILE_GAP = 6; // muss zum CSS-Gap passen
+
+function buildGrid(state){
+  const rows = rowsFor(state.players.length);
+  rowsCache = rows;
+  let idx = 0;
+  const canvas = document.createElement('div');
+  canvas.className = 'canvas16x9';
+  tileRefs = {};
+
+  rows.forEach(rowCount=>{
+    const row = document.createElement('div');
+    row.className = 'cam-row';
+    for(let i=0;i<rowCount;i++){
+      const p = state.players[idx];
+      if(!p){ idx++; continue; }
+
+      const tile = document.createElement('div');
+      tile.className = 'cam-tile';
+
+      const camWindow = document.createElement('div');
+      camWindow.className = 'cam-window';
+
+      const hearts = document.createElement('div');
+      hearts.className = 'hearts';
+
+      const nameBar = document.createElement('div');
+      nameBar.className = 'name-bar';
+      nameBar.innerHTML = `<span class="chip">AM ZUG</span><span class="name"></span>`;
+
+      const timerBadge = document.createElement('div');
+      timerBadge.className = 'timer-badge';
+
+      tile.appendChild(camWindow);
+      tile.appendChild(hearts);
+      tile.appendChild(nameBar);
+      tile.appendChild(timerBadge);
+      row.appendChild(tile);
+
+      tileRefs[p.id] = {
+        tile, camWindow, hearts, timerBadge,
+        nameEl: nameBar.querySelector('.name'),
+        currentVdo: undefined // erzwingt beim ersten updateTile ein iframe-Setup
+      };
+      idx++;
+    }
+    canvas.appendChild(row);
+  });
+
+  document.body.innerHTML = '';
+  document.body.appendChild(canvas);
+  canvasEl = canvas;
+  layoutTiles();
+}
+
+/* Berechnet für jede Kachel eine exakte 16:9-Größe (nie gestreckt/gestaucht),
+   zentriert im verfügbaren Platz - der Rest bleibt Hintergrundfarbe (Letterboxing). */
+function layoutTiles(){
+  if(!canvasEl) return;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const numRows = rowsCache.length;
+  if(numRows === 0) return;
+  const maxCols = Math.max(...rowsCache);
+
+  const widthScale = (W - (maxCols - 1) * TILE_GAP - 2 * TILE_GAP) / (maxCols * 16);
+  const heightScale = (H - (numRows - 1) * TILE_GAP - 2 * TILE_GAP) / (numRows * 9);
+  const scale = Math.max(1, Math.min(widthScale, heightScale)); // Skalierungsfaktor -> 1 Einheit = 1px Breite/16
+
+  const tileW = Math.floor(scale * 16);
+  const tileH = Math.floor(scale * 9);
+
+  document.querySelectorAll('.cam-tile').forEach(tile=>{
+    tile.style.width = tileW + 'px';
+    tile.style.height = tileH + 'px';
+    tile.style.flex = 'none';
+  });
+}
+
+window.addEventListener('resize', layoutTiles);
+
+function updateTile(p, idx, state){
+  const ref = tileRefs[p.id];
+  if(!ref) return;
+
+  ref.tile.className = 'cam-tile'
+    + (p.active ? ' active' : '')
+    + (isEliminated(p) ? ' eliminated' : '');
+
+  // Cam-Fenster nur anfassen, wenn sich der Stream tatsächlich geändert hat -> kein Reload/Flackern
+  if(ref.currentVdo !== p.vdo){
+    ref.currentVdo = p.vdo;
+    const vdoSrc = buildVdoViewSrc(p.vdo);
+    ref.camWindow.innerHTML = vdoSrc
+      ? `<iframe src="${vdoSrc}" allow="camera; microphone; autoplay; fullscreen" loading="eager"></iframe>`
+      : `<div class="cam-empty">wartet auf Stream …</div>`;
+  }
+
+  let heartsHtml = '';
+  for(let h=0; h<HEARTS_PER_PLAYER; h++){
+    heartsHtml += `<span class="heart${h>=p.hearts?' empty':''}">${HEART_SVG}</span>`;
+  }
+  if(ref.hearts.innerHTML !== heartsHtml) ref.hearts.innerHTML = heartsHtml;
+
+  const displayName = p.name || 'Spieler ' + (idx+1);
+  if(ref.nameEl.textContent !== displayName) ref.nameEl.textContent = displayName;
+
+  // Timer nur auf der Kachel des aktiven Spielers anzeigen
+  const remaining = p.active ? timerRemainingSec(state) : 0;
+  if(remaining > 0){
+    ref.timerBadge.textContent = remaining + 's';
+    ref.timerBadge.classList.add('visible');
+  }else{
+    ref.timerBadge.classList.remove('visible');
+  }
+}
+
+let lastLogoSrc = undefined;
+function updateLogo(state){
+  if(!canvasEl) return;
+  const src = state.logoDataUrl || '';
+  if(src === lastLogoSrc) return;
+  lastLogoSrc = src;
+
+  let img = canvasEl.querySelector('.overlay-logo');
+  if(!src){
+    if(img) img.remove();
+    return;
+  }
+  if(!img){
+    img = document.createElement('img');
+    img.className = 'overlay-logo';
+    canvasEl.appendChild(img);
+  }
+  img.src = src;
+}
+
+function render(){
+  const state = loadState();
+  const layoutKey = state.players.map(p=>p.id).join(',');
+
+  if(layoutKey !== lastLayoutKey){
+    buildGrid(state);
+    lastLayoutKey = layoutKey;
+  }
+
+  if(canvasEl){
+    canvasEl.style.background = state.bgColor || '#1a1533';
+  }
+
+  updateLogo(state);
+
+  state.players.forEach((p, idx)=> updateTile(p, idx, state));
+}
+
+window.onSyncStateUpdate = render;
+render();
+/* Häufigeres Tick fürs Timer-Countdown + Sicherheitsnetz falls eine Sync-Nachricht mal fehlt.
+   Da nur gezielt aktualisiert wird (kein DOM-Neuaufbau), verursacht das kein Flackern. */
+setInterval(render, 500);
+</script>
+</body>
+</html>
+
