@@ -121,9 +121,19 @@ function kickPlayer(state, idx){
   return state;
 }
 
-/* Zeilenaufteilung, damit die Cams das komplette 16:9-Bild ausfüllen */
+/* Zeilenaufteilung, damit die Cams das komplette 16:9-Bild ausfüllen und zentriert wirken */
 function rowsFor(n){
-  const layouts = { 1:[1], 2:[2], 3:[3], 4:[4], 5:[3,2], 6:[3,3], 7:[4,3], 8:[4,4], 9:[3,3,3] };
+  const layouts = {
+    1:[1],
+    2:[2],
+    3:[2,1],
+    4:[2,2],
+    5:[3,2],
+    6:[3,3],
+    7:[2,3,2],
+    8:[3,3,2],
+    9:[3,3,3]
+  };
   return layouts[n] || [n];
 }
 
