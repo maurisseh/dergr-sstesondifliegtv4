@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Moderatoren-Ansicht</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="mod">
+
+<div class="mod-wrap">
+  <h1>Moderatoren-Ansicht <span id="syncBadge" class="sync-badge offline">verbinde …</span></h1>
+  <p class="sub">
+    Steuert das Overlay. Bindet <code>index.html</code> als Browser-Quelle in OBS ein (füllt das ganze 16:9-Bild, keine Bedienelemente).
+    Diese Seite hier läuft am besten als <b>Custom Browser Dock</b> in OBS (Docks &rarr; Benutzerdefinierte Browser-Docks),
+    damit sich Overlay und Moderatoren-Ansicht den Speicher teilen und live synchron laufen. Öffnet ihr diese Seite stattdessen in eurem normalen Browser
+    außerhalb von OBS, sieht das OBS-Overlay die Änderungen nicht (getrennte Browser-Umgebungen).
+  </p>
+
+  <div class="overlay-link-box">
+    <div class="overlay-link-label">Overlay-Link (für OBS-Browser-Quelle oder direkt im Vollbild)</div>
+    <div class="overlay-link-row">
+      <input id="overlayLinkInput" type="text" readonly>
+      <button id="copyOverlayLink">Kopieren</button>
+      <a id="openOverlayLink" href="overlay.html" target="_blank" class="link-btn" style="margin:0;">Öffnen</a>
+    </div>
+  </div>
+
+  <div class="turn-panel" id="turnPanel"></div>
+
+  <div class="count-row" id="countRow"></div>
+  <div id="playerList"></div>
+
+  <button class="reset-btn" id="resetBtn">Herzen zurücksetzen</button>
+</div>
+
+<script src="app.js"></script>
+<script src="sync.js"></script>
+<script>
+const overlayUrl = location.origin + location.pathname.replace(/index\.html$/, '') + 'overlay.html';
+document.getElementById('overlayLinkInput').value = overlayUrl;
+document.getElementById('openOverlayLink').href = overlayUrl;
+document.getElementById('copyOverlayLink').addEventListener('click', ()=>{
+  navigator.clipboard.writeText(overlayUrl).then(()=>{
+    const btn = document.getElementById('copyOverlayLink');
+    const old = btn.textContent;
+    btn.textContent = 'Kopiert!';
+    setTimeout(()=> btn.textContent = old, 1500);
+  });
+});
+
+window.onSyncStatusChange = (connected)=>{
+  const badge = document.getElementById('syncBadge');
+  if(!badge) return;
+  badge.textContent = connected ? 'Sync verbunden' : 'Sync getrennt – verbinde erneut …';
+  badge.className = 'sync-badge ' + (connected ? 'online' : 'offline');
+};
+
+let state = loadState();
+
+function render(){
+  // Während man gerade in ein Textfeld tippt, nicht neu rendern (sonst springt der Fokus weg)
+  const activeEl = document.activeElement;
+  if(activeEl && activeEl.tagName === 'INPUT' && document.getElementById('playerList').contains(activeEl)){
+    return;
+  }
+
+  state = loadState();
+
+  /* ---- Turn-/Runden-Statusleiste ---- */
+  const panel = document.getElementById('turnPanel');
+  const idx = activePlayerIndex(state.players);
+  const current = state.players[idx];
+  const n = activeCount(state.players);
+  const complete = roundComplete(state);
+  const passNr = n > 0 ? Math.min(QUESTIONS_PER_ROUND, Math.floor(state.turnsThisRound / n) + 1) : 1;
+
+  panel.className = 'turn-panel' + (complete ? ' round-complete' : '');
+  const remaining = timerRemainingSec(state);
+  panel.innerHTML = `
+    <div class="info">
+      <p class="eyebrow">Runde ${state.round} · Frage ${Math.min(passNr, QUESTIONS_PER_ROUND)} von ${QUESTIONS_PER_ROUND} &middot; am Zug</p>
+      <p class="name">${current ? (current.name || 'Spieler ' + (idx+1)) : '–'}</p>
+      ${complete ? `<p class="round-msg">Runde beendet – jetzt voten &amp; ein Herz abziehen, dann neue Runde starten</p>` : ''}
+    </div>
+    <div class="timer-controls">
+      <span class="timer-readout ${remaining>0 ? 'running' : ''}">${remaining>0 ? remaining + 's' : ''}</span>
+      <button class="timer-btn" id="timerBtn">${remaining>0 ? 'Timer neu starten' : 'Timer starten (20s)'}</button>
+    </div>
+    ${complete
+      ? `<button class="newround-btn" id="newRoundBtn">Neue Runde starten</button>`
+      : `<button class="next-btn" id="nextBtn" ${n<2 ? 'disabled':''}>Weiter &rarr;</button>`
+    }
+  `;
+
+  document.getElementById('timerBtn').addEventListener('click', ()=>{
+    startTimer(state, 20);
+    saveState(state);
+    render();
+  });
+
+  if(complete){
+    document.getElementById('newRoundBtn').addEventListener('click', ()=>{
+      startNewRound(state);
+      saveState(state);
+      render();
+    });
+  }else{
+    document.getElementById('nextBtn').addEventListener('click', ()=>{
+      advanceTurn(state);
+      saveState(state);
+      render();
+    });
+  }
+
+  const countRow = document.getElementById('countRow');
+  countRow.innerHTML = '';
+  for(let n=5;n<=9;n++){
+    const b = document.createElement('button');
+    b.textContent = n + ' Spieler';
+    if(n===state.count) b.classList.add('on');
+    b.addEventListener('click', ()=>{
+      const prevPlayers = state.players;
+      const np = defaultState(n).players.map((p,i)=> prevPlayers[i] || p);
+      if(!np.some(p=>p.active)) np[0].active = true;
+      state = { count:n, players:np, round:1, turnsThisRound:0 };
+      saveState(state);
+      render();
+    });
+    countRow.appendChild(b);
+  }
+
+  const list = document.getElementById('playerList');
+  list.innerHTML = '';
+  state.players.forEach((p, i)=>{
+    const card = document.createElement('div');
+    const eliminated = isEliminated(p);
+    card.className = 'player-card' + (p.active ? ' active' : '') + (eliminated ? ' eliminated' : '');
+
+    let heartsHtml = '';
+    for(let h=0; h<HEARTS_PER_PLAYER; h++){
+      heartsHtml += `<span class="heart${h>=p.hearts?' empty':''}" data-idx="${h}">${HEART_SVG}</span>`;
+    }
+
+    const pushLink = buildVdoPushLink(p.vdo);
+    const canKick = eliminated && state.players.length > 2;
+
+    card.innerHTML = `
+      <div class="field">
+        <label>Name</label>
+        <input class="name" value="${p.name}" placeholder="Spieler ${i+1}">
+      </div>
+      <div class="field">
+        <label>vdo.ninja Stream-ID oder Link</label>
+        <input class="vdo" value="${p.vdo}" placeholder="z.B. eigene-id-123">
+      </div>
+      <div class="mod-hearts">${heartsHtml}</div>
+      <div class="actions">
+        ${pushLink ? `<a class="pushlink" href="${pushLink}" target="_blank">Sende-Link</a>` : ''}
+        ${canKick ? `<button class="kickbtn">Kicken</button>` : ''}
+        ${!eliminated ? `<button class="setactive">${p.active ? 'Ist dran' : 'Dran setzen'}</button>` : ''}
+      </div>
+    `;
+
+    if(canKick){
+      card.querySelector('.kickbtn').addEventListener('click', ()=>{
+        kickPlayer(state, i);
+        saveState(state);
+        render();
+      });
+    }
+
+    card.querySelector('.name').addEventListener('input', (e)=>{
+      p.name = e.target.value;
+      saveState(state);
+    });
+
+    card.querySelector('.vdo').addEventListener('input', (e)=>{
+      p.vdo = e.target.value;
+      saveState(state);
+    });
+    card.querySelector('.vdo').addEventListener('change', render);
+
+    card.querySelectorAll('.mod-hearts .heart').forEach(hEl=>{
+      hEl.addEventListener('click', ()=>{
+        const idx = parseInt(hEl.dataset.idx);
+        p.hearts = (idx+1 <= p.hearts) ? idx : idx+1;
+        saveState(state);
+        render();
+      });
+    });
+
+    const setActiveBtn = card.querySelector('.setactive');
+    if(setActiveBtn){
+      setActiveBtn.addEventListener('click', ()=>{
+        state.players.forEach(pl=>pl.active=false);
+        p.active = true;
+        saveState(state);
+        render();
+      });
+    }
+
+    list.appendChild(card);
+  });
+}
+
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  state.players.forEach(p=>p.hearts = HEARTS_PER_PLAYER);
+  saveState(state);
+  render();
+});
+
+render();
+window.onSyncStateUpdate = render;
+/* Timer-Anzeige braucht ein regelmäßiges Tick, unabhängig von state-Änderungen */
+setInterval(render, 1000);
+</script>
+</body>
+</html>
